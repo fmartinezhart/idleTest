@@ -1,16 +1,204 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Collect the Dots Game</title>
-  <link rel="stylesheet" href="style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmic Harvester: Full Screen</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Import PixiJS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.0/pixi.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+        
+        /* 1. Full Screen Setup */
+        html, body {
+            height: 100%; /* Important for full viewport height */
+            width: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* Hide scrollbars */
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0b0a1a; 
+            color: #f0f0f0;
+        }
+
+        /* The container holding the Pixi canvas (which should fill the screen) */
+        #pixi-canvas-container {
+            position: absolute; /* Take up the entire viewport */
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: block; /* Important for alignment */
+        }
+
+        canvas {
+            display: block;
+            /* Canvas border removed for true full-screen experience */
+        }
+
+        /* 2. Floating HUD Elements */
+        #hud-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Allows mouse events to pass through to the canvas by default */
+        }
+        
+        /* General styling for HUD cards */
+        .hud-card {
+            pointer-events: all; /* Re-enable pointer events for interaction */
+            background-color: #0f0e1c;
+            border: 4px solid #4a4e69;
+            border-radius: 12px;
+            box-shadow: 0 0 30px rgba(74, 78, 105, 0.5);
+            padding: 1.5rem;
+        }
+
+        /* Position the Stats bar (Top Left) */
+        #stats-bar {
+            position: absolute;
+            top: 1.5rem;
+            left: 1.5rem;
+            max-width: 90vw;
+        }
+
+        /* Position the Upgrade Panel (Bottom Right) */
+        #upgrade-panel {
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+            width: 300px;
+            max-width: 90vw;
+        }
+
+        /* 3. Button/Stat Aesthetics */
+        .stat {
+            font-weight: bold;
+        }
+
+        .upgrade-button {
+            background-color: #4a4e69;
+            color: #f0f0f0;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-weight: bold;
+            transition: background-color 0.2s, transform 0.1s;
+            width: 100%;
+            margin-top: 0.5rem;
+        }
+
+        .upgrade-button:hover:not(:disabled) {
+            background-color: #8c7ae6;
+            transform: translateY(-1px);
+        }
+
+        .upgrade-button:disabled {
+            background-color: #333642;
+            color: #888;
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+        
+        /* Snap Button */
+        #snap-to-harvester {
+             background-color: #FF79C6; 
+            color: #0b0a1a;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            font-weight: bold;
+            transition: background-color 0.2s, transform 0.1s;
+            box-shadow: 0 4px #b85493;
+            cursor: pointer;
+            margin-left: 1rem;
+        }
+
+        #snap-to-harvester:hover {
+            background-color: #ff9ccf;
+            box-shadow: 0 2px #b85493;
+            transform: translateY(1px);
+        }
+    </style>
 </head>
 <body>
-  <h1>Collect the Dots!</h1>
-  <div id="game-container">
-    <!-- Game elements will be drawn here by JS -->
-  </div>
-  <p id="score">Score: 0</p>
-  <script src="script.js"></script>
+    
+    <!-- 1. PIXI.js Canvas Container: This will hold the full-screen game -->
+    <div id="pixi-canvas-container"></div>
+
+    <!-- 2. HUD Container: Holds all floating UI elements -->
+    <div id="hud-container">
+
+        <!-- Stats Bar (Top Left) -->
+        <div id="stats-bar" class="hud-card">
+            <h1 class="text-xl font-bold text-indigo-400 mb-2">Cosmic Harvester</h1>
+            
+            <div class="flex items-center flex-wrap gap-4">
+                <div class="text-sm">
+                    Crystals: <span id="score-display" class="stat text-yellow-400 text-xl">0</span>
+                </div>
+                <div class="text-sm text-gray-400">
+                    Dots Active: <span id="dot-count-display" class="stat text-cyan-400">0</span>
+                </div>
+                <div class="text-sm text-gray-400">
+                    Zoom: <span id="zoom-level-display" class="stat text-green-400">1.00x</span>
+                </div>
+                <button id="snap-to-harvester" class="text-sm">
+                    Snap to Harvester
+                </button>
+            </div>
+            <p class="text-xs text-gray-400 mt-2">
+                Use **Mouse Wheel to Zoom** and **Click+Drag to Pan**.
+            </p>
+        </div>
+
+        <!-- Upgrade Panel (Bottom Right) -->
+        <div id="upgrade-panel" class="hud-card">
+            <h2 class="text-xl font-bold text-green-400 mb-4">Harvester Upgrades</h2>
+            
+            <!-- Upgrade 1: Speed -->
+            <div class="bg-gray-700/20 p-3 rounded-md mb-3 border border-gray-600/50">
+                <p class="upgrade-title">Speed Boost (Lv <span id="speed-level">1</span>)</p>
+                <p class="text-xs text-gray-400">Increases movement speed by 50%</p>
+                <button class="upgrade-button" id="upgrade-speed">
+                    Cost: <span id="speed-cost">100</span> Crystals
+                </button>
+            </div>
+            
+            <!-- Upgrade 2: Capacity -->
+            <div class="bg-gray-700/20 p-3 rounded-md mb-3 border border-gray-600/50">
+                <p class="upgrade-title">Capacity (Lv <span id="capacity-level">1</span>)</p>
+                <p class="text-xs text-gray-400">Increases trip haul limit by 5</p>
+                <button class="upgrade-button" id="upgrade-capacity">
+                    Cost: <span id="capacity-cost">150</span> Crystals
+                </button>
+            </div>
+            
+            <!-- Upgrade 3: Spawn Rate -->
+            <div class="bg-gray-700/20 p-3 rounded-md mb-3 border border-gray-600/50">
+                <p class="upgrade-title">Spawn Rate (Lv <span id="spawn-level">1</span>)</p>
+                <p class="text-xs text-gray-400">Reduces delay between new dot spawns</p>
+                <button class="upgrade-button" id="upgrade-spawn">
+                    Cost: <span id="spawn-cost">150</span> Crystals
+                </button>
+            </div>
+
+            <!-- Base Upgrade -->
+            <div class="bg-gray-700/20 p-3 rounded-md mb-3 border border-gray-600/50">
+                <p class="upgrade-title">New Base (<span id="base-count">1</span> owned)</p>
+                <p class="text-xs text-gray-400">Builds a new base to expand collection range</p>
+                <button class="upgrade-button bg-pink-700 hover:bg-pink-500" id="buy-new-base">
+                    Cost: <span id="new-base-cost">500</span> Crystals
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Import Logic File -->
+    <script src="game.js"></script>
 </body>
 </html>

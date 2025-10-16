@@ -1,32 +1,116 @@
-/* You can add global styles to this file, and also import other style files */
+/* Reset and Base Styles */
 body {
-    font-family: Arial, sans-serif;
+    background-color: #0b0a1a; /* Dark background */
+    color: #e0e0e0;
+    margin: 0;
+    padding: 0;
+    overflow-x: hidden;
+}
+
+/* Main Wrapper for layout */
+#main-wrapper {
+    gap: 1.5rem;
+    align-items: flex-start;
+    justify-content: center;
+    max-width: 1400px; /* Max content width */
+    margin: 0 auto;
+}
+
+/* Game Container */
+#game-container {
+    height: 90vh; /* Takes up most of the viewport height */
+}
+
+/* PIXI Canvas Container */
+#pixi-canvas-container {
+    width: 100%;
+    /* Flex properties center the canvas within this container */
+    display: flex; 
+    justify-content: center;
+    align-items: center;
+}
+
+/* Styling for the actual PIXI canvas element (app.view) */
+#pixi-canvas-container canvas {
+    /* Ensures the canvas is centered */
+    margin: 0 auto; 
+    border: 4px solid #4a4e69;
+    border-radius: 12px;
+    box-shadow: 0 0 30px rgba(140, 122, 230, 0.4);
+    display: block; /* Important for flex centering */
+}
+
+/* Stats Styling */
+.stat-box {
+    background-color: #1a1727;
+    border: 1px solid #4a4e69;
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
     text-align: center;
-    background: #f0f0f0;
-  }
-  
-  #game-container {
-    position: relative;
-    width: 400px;
-    height: 400px;
-    margin: 20px auto;
-    background: #222;
-    border: 2px solid #555;
-    overflow: hidden;
-  }
-  
-  .dot {
-    position: absolute;
-    width: 10px;
-    height: 10px;
-    background: yellow;
-    border-radius: 50%;
-  }
-  
-  #player {
-    position: absolute;
-    width: 20px;
-    height: 20px;
-    background: limegreen;
-    border-radius: 5px;
-  }
+    min-width: 120px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* Upgrade Panel Styling */
+#upgrade-panel {
+    background-color: #0f0e1c;
+    border: 4px solid #4a4e69;
+    border-radius: 12px;
+    box-shadow: 0 0 20px rgba(74, 78, 105, 0.5);
+    padding: 1.5rem;
+    max-width: 100%;
+}
+
+.upgrade-card {
+    background-color: rgba(74, 78, 105, 0.2);
+    border: 2px solid #4a4e69;
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    transition: transform 0.2s;
+}
+
+.upgrade-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(140, 122, 230, 0.3);
+}
+
+.upgrade-title {
+    font-size: 1.1rem;
+    font-weight: bold;
+    color: #8c7ae6;
+    margin-bottom: 0.25rem;
+}
+
+.upgrade-effect {
+    font-size: 0.85rem;
+    color: #a0a0a0;
+    margin-bottom: 0.75rem;
+}
+
+.upgrade-button {
+    width: 100%;
+    padding: 0.5rem;
+    border-radius: 6px;
+    font-weight: bold;
+    color: #0b0a1a;
+    background-color: #69D2E7;
+    transition: background-color 0.2s, transform 0.1s;
+}
+
+.upgrade-button:hover:not(:disabled) {
+    background-color: #7BE9FF;
+    transform: translateY(-1px);
+}
+
+.upgrade-button:disabled {
+    background-color: #4A4E69;
+    color: #9093A8;
+    cursor: not-allowed;
+}
+
+.footer-text {
+    font-size: 0.75rem;
+    color: #a0a0a0;
+    text-align: center;
+}
