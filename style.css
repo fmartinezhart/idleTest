@@ -1,93 +1,133 @@
-/* Reset and Base Styles */
-body {
-    background-color: #0b0a1a; /* Dark background */
-    color: #e0e0e0;
-    margin: 0;
-    padding: 0;
-    overflow-x: hidden;
-}
+/* ------------------------------------------------------------------- */
+/* MODIFIED: #game-panel (Unified Stats and Upgrades) */
+/* ------------------------------------------------------------------- */
 
-/* Main Wrapper for layout */
-#main-wrapper {
-    gap: 1.5rem;
-    align-items: flex-start;
-    justify-content: center;
-    max-width: 1400px; /* Max content width */
-    margin: 0 auto;
-}
-
-/* Game Container */
-#game-container {
-    height: 90vh; /* Takes up most of the viewport height */
-}
-
-/* PIXI Canvas Container */
-#pixi-canvas-container {
-    width: 100%;
-    /* Flex properties center the canvas within this container */
+#game-panel {
+    position: absolute;
+    top: 1.5rem; 
+    left: 1.5rem;   /* NEW: Anchor to the left side */
+    right: 1.5rem;  /* NEW: Anchor to the right side */
+    
+    /* Default size is now set by left/right anchors */
+    width: auto; 
+    max-width: none; /* Allow full width */
+    height: auto;
+    max-height: 65px; /* Enough height for the header text and padding */
+    overflow: hidden; 
+    
+    /* Base card/layout styles */
+    background-color: rgba(15, 14, 28, 0.85);
+    border: 4px solid #4a4e69;
+    border-radius: 12px;
+    box-shadow: 0 0 30px rgba(74, 78, 105, 0.5);
+    padding: 0.75rem 1.5rem; 
+    
     display: flex; 
-    justify-content: center;
+    flex-direction: column;
+    
+    transition: all 0.4s cubic-bezier(0.86, 0, 0.07, 1);
+}
+
+body {
+    font-family: 'Inter', sans-serif;
+    /* This line sets the base color for elements without specific Tailwind colors */
+    color: #e0e0e0; 
+}
+
+/* Ensure the Header is styled correctly */
+#game-panel-header {
+    flex-shrink: 0;
+    /* Ensure the stats area and toggle icon are aligned */
+    display: flex; 
+    justify-content: space-between;
     align-items: center;
 }
 
-/* Styling for the actual PIXI canvas element (app.view) */
-#pixi-canvas-container canvas {
-    /* Ensures the canvas is centered */
-    margin: 0 auto; 
-    border: 4px solid #4a4e69;
-    border-radius: 12px;
-    box-shadow: 0 0 30px rgba(140, 122, 230, 0.4);
-    display: block; /* Important for flex centering */
+#game-panel-header .tab-button {
+    /* Override flex-grow: 1 from other tab styles */
+    flex-grow: 0; 
+    padding: 0.5rem 0.75rem; /* Make header buttons slightly smaller */
+    /* Add a visual break from the toggle icon */
+    margin-right: 1.5rem; 
 }
 
-/* Stats Styling */
-.stat-box {
-    background-color: #1a1727;
-    border: 1px solid #4a4e69;
-    border-radius: 8px;
-    padding: 0.5rem 1rem;
-    text-align: center;
-    min-width: 120px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+/* Ensure tab buttons inside the inner content (SHIP/WORLD) are wider */
+#sub-tab-container .tab-button {
+    flex-grow: 1; /* These should split the available width */
+    padding: 0.75rem 0.5rem;
 }
 
-/* Upgrade Panel Styling */
-#upgrade-panel {
-    background-color: #0f0e1c;
-    border: 4px solid #4a4e69;
-    border-radius: 12px;
-    box-shadow: 0 0 20px rgba(74, 78, 105, 0.5);
-    padding: 1.5rem;
-    max-width: 100%;
+/* Inner content is hidden by default, styled for expansion */
+#upgrade-panel-inner-content {
+    display: none; 
+    /* This ensures inner content takes up space when visible */
+    flex-direction: column; 
+    flex-grow: 1; 
 }
 
-.upgrade-card {
-    background-color: rgba(74, 78, 105, 0.2);
-    border: 2px solid #4a4e69;
-    border-radius: 8px;
-    padding: 1rem;
+
+/* STATE 1: COLLAPSED (.panel-collapsed is present) */
+.panel-collapsed {
+    /* Height is forced to header size, width is auto (full width) */
+    max-height: 65px !important; 
+    overflow-y: hidden !important; 
+}
+
+/* STATE 2: EXPANDED (#game-panel:not(.panel-collapsed)) */
+#game-panel:not(.panel-collapsed) {
+    /* Expands to almost fill the screen */
+    width: auto !important; /* Left/Right anchors already set width */
+    height: calc(100vh - 3rem) !important; 
+    
+    max-width: none !important;
+    max-height: none !important;
+
+    overflow-y: auto !important;
+    
+    /* Ensure the icon flips down when expanded */
+    #panel-toggle-icon {
+        transform: rotate(180deg) !important; 
+    }
+    
+    /* Make inner content visible and flow correctly */
+    #upgrade-panel-inner-content {
+        display: flex !important;
+    }
+}
+
+#main-tab-container {
+    display: flex;
+    margin-bottom: 0.5rem; /* Space below main tabs */
+    pointer-events: all;
+    /* Removed border-bottom here, as it's defined on the new sub-tab container */
+}
+
+#sub-tab-container {
+    display: flex;
     margin-bottom: 1rem;
-    transition: transform 0.2s;
+    pointer-events: all;
+    border-bottom: 2px solid #4a4e69;
 }
 
-.upgrade-card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(140, 122, 230, 0.3);
+
+/* FIX: Ensure columns are laid out correctly when expanded */
+.upgrade-columns {
+    display: flex;
+    gap: 1.5rem; 
+    padding-top: 0.5rem;
+    flex-wrap: wrap; /* Allows columns to wrap on smaller screens */
+    /* Must allow this container to take up all available vertical space */
+    flex-grow: 1; 
 }
 
-.upgrade-title {
-    font-size: 1.1rem;
-    font-weight: bold;
-    color: #8c7ae6;
-    margin-bottom: 0.25rem;
+.upgrade-column {
+    flex: 1; /* Each column takes equal space */
+    display: flex;
+    flex-direction: column;
+    min-width: 250px; /* Prevent columns from being squashed too small */
 }
 
-.upgrade-effect {
-    font-size: 0.85rem;
-    color: #a0a0a0;
-    margin-bottom: 0.75rem;
-}
-
+/* Ensure buttons are visible (Reconfirming existing styles) */
 .upgrade-button {
     width: 100%;
     padding: 0.5rem;
@@ -97,20 +137,34 @@ body {
     background-color: #69D2E7;
     transition: background-color 0.2s, transform 0.1s;
 }
-
-.upgrade-button:hover:not(:disabled) {
-    background-color: #7BE9FF;
-    transform: translateY(-1px);
-}
-
 .upgrade-button:disabled {
-    background-color: #4A4E69;
-    color: #9093A8;
+    /* Styles for when the button is not clickable */
+    background-color: #4A4E69; /* Darker, neutral color */
+    color: #9093A8; /* Lighter text color */
     cursor: not-allowed;
+    opacity: 0.7; /* Optional: Make it slightly transparent */
+    box-shadow: none; /* Remove hover/active shadow effects */
+    transform: none; /* Remove hover/active translation effects */
 }
 
-.footer-text {
-    font-size: 0.75rem;
-    color: #a0a0a0;
-    text-align: center;
+#pixi-canvas-container {
+    /* Ensure the container uses the default cursor */
+    cursor: default; 
+}
+
+/* Ensure the PIXI canvas element itself uses the default cursor */
+#pixi-canvas-container canvas {
+    cursor: default;
+}
+
+.cursor-grabbing {
+    /* Hand cursor when user is dragging (panning) */
+    cursor: grabbing !important; 
+    cursor: -moz-grabbing !important;
+    cursor: -webkit-grabbing !important;
+}
+
+.cursor-default {
+    /* Explicitly set default when not dragging */
+    cursor: default !important;
 }
