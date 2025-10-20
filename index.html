@@ -18,17 +18,21 @@
             
             <div id="stats-area" class="flex items-center flex-wrap gap-4">
                 <h1 class="text-xl font-bold text-indigo-400">Cosmic Harvester</h1>
-                <div class="text-sm">
-                    Crystals: <span id="score-display" class="stat text-yellow-400 text-xl">0</span>
-                </div>
+                
+                <div id="inline-inventory-display" class="flex items-center gap-4">
+                    </div>
                 <button id="snap-to-homebase" class="text-sm">Snap to Home Base</button>
             </div>
+
+            
             
             <div class="flex items-center space-x-4">
                 <button id="tab-upgrades" class="tab-button tab-active" data-maintab="upgrades">UPGRADES</button>
                 <button id="tab-research" class="tab-button" data-maintab="research">RESEARCH</button>
             </div>
         </div>
+
+        
         
         <div id="upgrade-panel-inner-content" class="space-y-4">
             
@@ -40,6 +44,9 @@
             <div id="upgrade-panel-content">
                 </div>
         </div>
+
+        
+
     </div>
 
     <script src="game.js"></script>

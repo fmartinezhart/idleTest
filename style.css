@@ -12,7 +12,7 @@
     width: auto; 
     max-width: none; /* Allow full width */
     height: auto;
-    max-height: 65px; /* Enough height for the header text and padding */
+    max-height: 100px;; /* Enough height for the header text and padding */
     overflow: hidden; 
     
     /* Base card/layout styles */

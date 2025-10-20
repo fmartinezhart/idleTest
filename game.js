@@ -36,6 +36,26 @@ const HEALTH_PER_SIZE = 40; // Base health for a 'size 1' asteroid (50 is the ol
 const REWARD_PER_SIZE = 5; // Base reward for a 'size 1' asteroid
 const ASTEROID_COLORS = [0xD3D3D3, 0xA9A9A9, 0x808080, 0x696969, 0x505050]; // A palette of desaturated colors
 
+
+const ASTEROID_DENSITY = 0.005; // Density used to calculate mass (mass = density * size^3)
+const FRAGMENT_MASS = 1;        // Fixed, very light mass for fragments
+const ASTEROID_RESTITUTION = 0.4; // How bouncy asteroids are (0 = no bounce, 1 = perfect bounce)
+const FRAGMENT_RESTITUTION = 0.7; // Fragments bounce more
+const FRICTION = 0.999;           // Velocity decay per frame (small asteroids decay faster)
+const INITIAL_DRIFT_SPEED = 50;   // Base speed for initial asteroid float
+// Fragment Explosion Speed Control
+const MIN_EXPLOSION_SPEED = 10; // Minimum initial velocity for fragments
+const MAX_EXPLOSION_SPEED = 40; // Maximum initial velocity for fragments (Down from 100)
+
+// Drag/Friction Coefficients (Higher value means faster deceleration)
+const ASTEROID_FRICTION_COEF = 0.05; // Low friction for big, slow-moving asteroids
+const FRAGMENT_FRICTION_COEF = 0.8;  // High friction for fragments (slows them down very quickly)
+
+
+const PARTICLE_TRAIL_RATE = 50; // Milliseconds between spawning a new particle
+const PARTICLE_LIFE_MS = 500;   // How long a particle exists (milliseconds)
+const PARTICLE_SIZE = 1;       // Small particle size
+
 // --- MULTI-HARVESTER CONSTANTS ---
 let nextHarvesterId = 1;
 
@@ -50,11 +70,9 @@ let activeHarvester = null; // Used for camera snapping/UI focus
 
 // Base Game Constants
 
-const HARVESTER_RANGE = 1000; 
+
 const MAX_BASE_LINK_DISTANCE = 500; 
 const BASE_LASER_RANGE = 5000; // Now the max travel distance for a bullet
-const BASE_FUEL_CAPACITY = 100;  // Max fuel harvester can carry
-const FUEL_CONSUMPTION_RATE = 0.05; // Fuel units consumed per unit of distance moved (per pixel)
 const REFUEL_RATE_PER_SEC = 1000; // Fuel units restored per second
 const REFUEL_RANGE = 50;
 
@@ -71,7 +89,8 @@ let lastPanX = 0;
 let lastPanY = 0;
 
 // All game coordinates now operate in world space
-let score = 1000;
+
+
 let collectedInTrip = 0; 
 
 // Base State
@@ -82,8 +101,6 @@ let homeBase; // Reference to the main base object (bases[0])
 let activeBase = null; // Tracks which base is selected for WASD movement/firing
 let keyState = {}; // Tracks currently pressed keys
 
-let currentFuel = BASE_FUEL_CAPACITY;
-let maxFuel = BASE_FUEL_CAPACITY; 
 let isHarvesterRefueling = false;
 let refuelingRate = 50; // Fuel units restored per second
 
@@ -93,16 +110,66 @@ let lastFireTime = 0;
 let mouseWorldX = 0; // Mouse position in world coordinates
 let mouseWorldY = 0; // Mouse position in world coordinates
 
+let particles = [];
+
+const VEHICLE_DEFINITIONS = [
+    {
+        id: 'harvester',
+        name: 'Harvester Unit',
+        maxFuel: 100,
+        fuelConsumption: 0.05, // Fuel units consumed per unit of distance
+        cargoCapacity: 100,
+        collectionRange: 1000,
+        researchRate: 0, // No research ability
+        purchaseCost: 0,
+        subgroup: 'Harvester Ships',
+        // New property for behavior
+        behavior: 'HARVEST_RESOURCES',
+        // Graphics size reference
+        graphicSize: 1.5, 
+    },
+    {
+        id: 'satellite',
+        name: 'Research Satellite',
+        maxFuel: 0, // Does not use fuel, remains stationary at base
+        fuelConsumption: 0,
+        cargoCapacity: 0,
+        collectionRange: 400, // This is the RESEARCH range
+        researchRate: 0.5, // Research points per second per asteroid in range
+        purchaseCost: 800,
+        subgroup: 'Utility Ships',
+        // New property for behavior
+        behavior: 'GENERATE_RESEARCH', 
+        graphicSize: 0.7, // Smaller graphic
+    },
+    // Add new ship types here later!
+];
+
+let vehicles = [];
+let nextVehicleId = 1; // Used to assign unique IDs
+
+function countVehiclesByType(typeId) {
+    if (typeId === 'harvester') {
+        // If harvesters are still managed separately, use that array's length
+        return harvesters.length;
+    }
+    
+    // For all other vehicles (satellites, drones, etc.), filter the 'vehicles' array
+    return vehicles.filter(v => v.typeId === typeId).length;
+}
+
 // --- UPGRADE DATA STRUCTURE (The New Core with Grouping) ---
 const UPGRADES = [
     {
         id: 'speed',
         name: 'Speed Boost',
         level: 1,
-        baseCost: 100,
-        cost: 100,
+        baseCost: 1,
+        cost: 1,
         group: 'ship',
         subgroup: 'Mobility & Hull',
+        appliesToStat: 'movementSpeed', // <-- Property name on the ship object
+        appliesToType: 'harvester',
         description: 'Increases movement speed by 50%',
         effect: (level) => MOVEMENT_SPEED_BASE * (1 + (level - 1) * 0.5), 
         costFormula: (cost) => Math.floor(cost * 1.5),
@@ -112,10 +179,12 @@ const UPGRADES = [
         id: 'capacity',
         name: 'Cargo Capacity',
         level: 1,
-        baseCost: 150,
-        cost: 150,
+        baseCost: 1,
+        cost: 1,
         group: 'ship',
         subgroup: 'Mobility & Hull',
+        appliesToStat: 'cargoCapacity',
+        appliesToType: 'harvester',
         description: 'Increases trip haul limit by 5',
         effect: (level) => 10 + (level - 1) * 5, 
         costFormula: (cost) => Math.floor(cost * 1.5),
@@ -198,36 +267,80 @@ const UPGRADES = [
         cost: 200,
         group: 'ship',
         subgroup: 'Ship Systems',
+        appliesToStat: 'collectionRange',
+        appliesToType: 'harvester',
         description: 'Increases collection radius around bases',
-        effect: (level) => HARVESTER_RANGE * (1 + (level - 1) * 0.2), 
+        effect: (level) => VEHICLE_DEFINITIONS[0]['collectionRange'] * (1 + (level - 1) * 0.2), 
         costFormula: (cost) => Math.floor(cost * 1.8),
-        currentValue: HARVESTER_RANGE
+        currentValue: VEHICLE_DEFINITIONS[0]['collectionRange']
     },
     {
         id: 'new-harvester',
         name: 'New Harvester',
-        level: 1,
-        baseCost: 200,
-        cost: 200,
+        // The level *is* the number of harvesters currently owned
+        level: countVehiclesByType('harvester'), 
+        baseCost: 1,
+        cost: 1,
         group: 'ship types',
         subgroup: 'Ships',
+        spawnsVehicleType: 'harvester',
         description: 'Deploys an additional autonomous Harvester unit.',
-        effect: (level) => HARVESTER_RANGE * (1 + (level - 1) * 0.2), 
+        effect: (level) => `Total Harvesters: ${level}`, 
         costFormula: (cost) => Math.floor(cost * 2.5),
-        currentValue: harvesters.length,
-        maxLevel: 5 // Limit the number of available ships
-    }
+        // FIXED: Use the helper function
+        currentValue: countVehiclesByType('harvester'), 
+        maxLevel: 5
+    },
+    {
+        id: 'new-satellite',
+        name: 'New Satellite',
+        // The level *is* the number of satellites currently owned
+        level: countVehiclesByType('satellite'), 
+        baseCost: 1,
+        cost: 1,
+        group: 'ship types',
+        subgroup: 'Ships',
+        spawnsVehicleType: 'satellite',
+        description: 'Deploys an additional autonomous satellite unit.',
+        effect: (level) => `Total Satellites: ${level}`, 
+        costFormula: (cost) => Math.floor(cost * 2.5),
+        // FIXED: Use the helper function (assuming typeId is 'satellite')
+        currentValue: countVehiclesByType('satellite'), 
+        maxLevel: 5
+    },
     
 ];
+
+// --- DYNAMIC VEHICLE/SHIP SYSTEM ---
+
+
+
+let currentHarvesterRange = VEHICLE_DEFINITIONS[0]['collectionRange'];
+
+
+const RESOURCE_TYPES = {
+    // Key used for tracking
+    CRYSTAL: { name: 'Crystals', color: 0x8C7AE6, collectSound: 'collectCrystal' },
+    METAL: { name: 'Metal', color: 0xA9A9A9, collectSound: 'collectMetal' },
+    ICE: { name: 'Ice', color: 0x69D2E7, collectSound: 'collectIce' },
+    // You can add more later: DUST, GAS, etc.
+};
+
+let inventory = {
+    [RESOURCE_TYPES.CRYSTAL.name]: 0,
+    [RESOURCE_TYPES.METAL.name]: 0,
+    [RESOURCE_TYPES.ICE.name]: 0,
+
+};
 
 // Special Purchase State
 let baseCost = 500; 
 let baseCount = 1;
 
 // Harvester state
-let collectedInTripMax = UPGRADES.find(u => u.id === 'capacity').currentValue;
-let currentHarvesterRange = UPGRADES.find(u => u.id === 'harvester-range')?.currentValue || HARVESTER_RANGE;
-let canHarvestLargeResources = getUpgrade('large-haul').currentValue;
+//let collectedInTripMax = UPGRADES.find(u => u.id === 'capacity').currentValue;
+//let currentHarvesterRange = UPGRADES.find(u => u.id === 'harvester-range')?.currentValue || HARVESTER_RANGE;
+//let canHarvestLargeResources = getUpgrade('large-haul').currentValue;
 let resources = [];
 let targetResource = null;
 let lastActionTime = 0;
@@ -264,6 +377,7 @@ function distance(p1, p2) {
     }
     return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
 }
+
 
 // --- PIXI Graphics Creation ---
 
@@ -328,24 +442,31 @@ function createBulletGraphic() {
 
 function createBaseGraphic(color, initialX, initialY) {
     const baseGraphic = new PIXI.Graphics();
+    
+    // Use your existing defined radii
     const outerRadius = PLAYER_SIZE * 3.5;
     const innerRadius = PLAYER_SIZE * 1.5;
 
-    // 1. Draw the central glow
+    // --- Space Station Visuals ---
+    
+    // 1. Draw the central glow (KEPT)
     baseGraphic.beginFill(color, 0.2); 
     baseGraphic.drawCircle(0, 0, outerRadius / 1.5);
     baseGraphic.endFill();
 
-    // 2. Draw the core structure (8-pointed star)
+    // 2. Draw the core structure (8-pointed star, now appearing solid/metallic)
     const points = [];
     const numPoints = 8;
     for (let i = 0; i < numPoints * 2; i++) {
-        const radius = i % 2 === 0 ? outerRadius : innerRadius;
+        // Vary the radius to create the 8-point star shape
+        const radius = i % 2 === 0 ? outerRadius : innerRadius * 1.5; 
         const angle = (i * Math.PI) / numPoints;
         points.push(Math.cos(angle) * radius, Math.sin(angle) * radius);
     }
     
-    baseGraphic.beginFill(0x4A4E69, 1.0); 
+    // Add a border and fill with a solid, metallic gray
+    baseGraphic.lineStyle(2, 0x9093A8, 1.0); // Light gray/metal border
+    baseGraphic.beginFill(0x4A4E69, 1.0); // Solid core color
     baseGraphic.drawPolygon(points);
     baseGraphic.endFill();
 
@@ -354,11 +475,13 @@ function createBaseGraphic(color, initialX, initialY) {
     baseGraphic.drawCircle(0, 0, innerRadius / 2);
     baseGraphic.endFill();
     
-    // 4. Draw the influence range (translucent circle)
+    // 4. Draw the influence range (translucent circle) (KEPT)
+    // NOTE: currentHarvesterRange must be defined globally for this line to compile
     baseGraphic.lineStyle(2, color, 0.2); 
     baseGraphic.drawCircle(0, 0, currentHarvesterRange);
     baseGraphic.endFill();
     
+    // --- Interaction and Positioning (KEPT) ---
     baseGraphic.x = initialX; 
     baseGraphic.y = initialY; 
     
@@ -368,6 +491,32 @@ function createBaseGraphic(color, initialX, initialY) {
     baseGraphic.on('pointerdown', onBaseSelect);
 
     return baseGraphic;
+}
+
+// Change function signature to accept the vehicle object
+function createSatelliteGraphic(vehicle) { 
+    const graphics = new PIXI.Graphics();
+    const coreColor = 0xBBFFBB; 
+    const ringColor = 0xBBFFBB; 
+    // Use the dynamic graphicSize property
+    const radius = PLAYER_SIZE * vehicle.graphicSize; 
+
+    // 1. Draw the core
+    graphics.beginFill(coreColor);
+    graphics.drawCircle(0, 0, radius);
+    graphics.endFill();
+
+    // 2. Draw the sensor ring (range indicator) - Uses the vehicle's collectionRange property
+    graphics.lineStyle(2, ringColor, 0.4); 
+    graphics.drawCircle(0, 0, vehicle.collectionRange); // <--- FIXED: Reads from vehicle object
+    graphics.endFill();
+    
+    // 3. Draw an antenna/sensor on top
+    graphics.lineStyle(1, ringColor, 1.0);
+    graphics.moveTo(0, -radius);
+    graphics.lineTo(0, -radius * 2.5);
+
+    return graphics;
 }
 
 function createHarvesterGraphic() {
@@ -402,90 +551,190 @@ function createFuelBarGraphic() {
     return bar;
 }
 
-function HarvesterFactory(x, y) {
-    const harvester = {
-        id: `harvester-${nextHarvesterId++}`,
-        x: x,
-        y: y,
-        sprite: createHarvesterGraphic(),
-        fuelBar: createFuelBarGraphic(),
+function VehicleFactory(typeId, x, y, attachedToBase = null) {
+    const template = VEHICLE_DEFINITIONS.find(d => d.id === typeId);
+    if (!template) {
+        console.error(`Vehicle type '${typeId}' not found.`);
+        return null;
+    }
+    
+    // 1. Create the graphic (sprite)
+    const sprite = createVehicleGraphic(typeId, template.graphicSize);
+
+    // 2. Create the fuel bar (if applicable)
+    const maxFuel = template.maxFuel; 
+    // Define initial values for properties that will be upgraded
+    const initialSpeed = getUpgrade('speed').currentValue;
+    const initialCapacity = getUpgrade('capacity').currentValue;
+    const initialRange = getUpgrade('harvester-range').currentValue;
+    
+    // 3. Create the vehicle state object and assign x/y
+    const vehicle = { 
+        id: `${typeId}-${nextVehicleId++}`,
+        typeId: typeId, 
+        x: x, // <-- FIXED: x is defined as a parameter
+        y: y, // <-- FIXED: y is defined as a parameter
+        sprite: sprite, 
         
-        // Individual state for the harvester
-        currentFuel: BASE_FUEL_CAPACITY, 
-        maxFuel: BASE_FUEL_CAPACITY,
+        // --- Dynamic Stats from Template ---
+        maxFuel: maxFuel,
+        currentFuel: maxFuel,
+        fuelConsumption: template.fuelConsumption,
+        collectionRange: template.collectionRange,
+        researchRate: template.researchRate,
+        behavior: template.behavior,
+        movementSpeed: initialSpeed,    // Used by 'speed' upgrade
+        cargoCapacity: initialCapacity, // Used by 'capacity' upgrade
+        
+        // --- State Management ---
+        fuelBar: maxFuel > 0 ? createFuelBarGraphic(maxFuel) : null,
         isRefueling: false,
-        
-        state: 'IDLE', // IDLE, MOVING_TO_RESOURCE, RETURNING_TO_BASE, etc.
+        state: 'IDLE', 
         targetResource: null,
-        currentBase: homeBase,
+        currentBase: attachedToBase,
         collectedInTrip: 0,
-        lastActionTime: 0,
+        collectedInTripPayload: {},
+        lastActionTime: performance.now(), 
+        orbitalRadius: 300, // Default distance from the base center
+        orbitalSpeed: 0.001, // Radians per frame (controls speed of rotation)
+        orbitalAngle: Math.random() * Math.PI * 2, // Start at a random point in the orbit
     };
     
-    // Set initial position
-    harvester.sprite.x = x;
-    harvester.sprite.y = y;
+    // 4. Position the PIXI graphics
+    vehicle.sprite.x = x;
+    vehicle.sprite.y = y;
+    if (vehicle.fuelBar) {
+        vehicle.fuelBar.x = x;
+        vehicle.fuelBar.y = y;
+        worldContainer.addChild(vehicle.fuelBar);
+    }
     
-    return harvester;
+    worldContainer.addChild(vehicle.sprite);
+    
+    return vehicle;
 }
 
-function createResource(x, y, isFragment = false, centerX = 0, centerY = 0) {    const uniqueId = Math.random() * 1000000; 
-
-    // --- NEW LOGIC START ---
-    let actualSize;
-    let health;
-    let maxHealth;
-    let reward;
-    
-    if (isFragment) {
-        actualSize = RESOURCE_SIZE_FRAGMENT;
-        health = 1; 
-        maxHealth = 1;
-        reward = 1;
-    } else {
-        // 1. Generate a random size factor
-        const sizeFactor = MIN_ASTEROID_SIZE_FACTOR + 
-            Math.random() * (MAX_ASTEROID_SIZE_FACTOR - MIN_ASTEROID_SIZE_FACTOR);
-            
-        // 2. Calculate Size, Health, and Reward based on factor
-        actualSize = RESOURCE_SIZE_ASTEROID * sizeFactor;
-        health = Math.floor(sizeFactor * HEALTH_PER_SIZE); 
-        maxHealth = health; // Store initial health
-        reward = Math.floor(sizeFactor * REWARD_PER_SIZE); 
+function createVehicleGraphic(typeId, graphicSize) {
+    const template = VEHICLE_DEFINITIONS.find(v => v.id === typeId);
+    if (!template) {
+        // Handle error case for unknown vehicle types
+        const graphics = new PIXI.Graphics();
+        graphics.beginFill(0xFF0000);
+        graphics.drawRect(-5, -5, 10, 10);
+        graphics.endFill();
+        return graphics;
     }
-    // --- NEW LOGIC END ---
 
-    // Pass the calculated size to the graphic creator
-    const sprite = createResourceGraphic(isFragment, actualSize); 
+    if (typeId === 'harvester') {
+        // Only return the graphic from the graphic function
+        return createHarvesterGraphic(graphicSize); 
+    } else if (typeId === 'satellite') {
+        // Create a temporary object to pass the necessary range to the graphic function
+        return createSatelliteGraphic({ collectionRange: template.collectionRange, graphicSize: graphicSize });
+    }
     
+    // Default or error graphic
+    const graphics = new PIXI.Graphics();
+    graphics.beginFill(0xFF0000);
+    graphics.drawRect(-5, -5, 10, 10);
+    graphics.endFill();
+    return graphics;
+}
+
+function createAsteroid(x, y, centerX = 0, centerY = 0) { 
+    const uniqueId = Math.random() * 1000000; 
+
+    // 1. Calculate Size, Health, and Payload
+    const sizeFactor = MIN_ASTEROID_SIZE_FACTOR + 
+         Math.random() * (MAX_ASTEROID_SIZE_FACTOR - MIN_ASTEROID_SIZE_FACTOR);
+        
+    const actualSize = RESOURCE_SIZE_ASTEROID * sizeFactor;
+    const health = Math.floor(sizeFactor * HEALTH_PER_SIZE); 
+    const maxHealth = health;
+
+    // Calculate mass based on size (volume approximation)
+    const mass = actualSize * actualSize * actualSize * ASTEROID_DENSITY;
+    
+    // Initial random drift velocity
+    const driftAngle = Math.random() * 2 * Math.PI;
+    const driftSpeed = Math.random() * INITIAL_DRIFT_SPEED;
+    
+    // Calculate modular payload (same logic as before)
+    const resourcePayload = {};
+    const baseReward = Math.floor(sizeFactor * REWARD_PER_SIZE);
+    resourcePayload[RESOURCE_TYPES.CRYSTAL.name] = Math.max(1, Math.floor(baseReward * 0.5)); 
+    resourcePayload[RESOURCE_TYPES.METAL.name] = Math.floor(baseReward * 0.3 * Math.random());
+    resourcePayload[RESOURCE_TYPES.ICE.name] = Math.floor(baseReward * 0.2 * Math.random());
+    
+    // 2. Create Graphic (assuming createResourceGraphic still exists)
+    const sprite = createResourceGraphic(false, actualSize); // 'false' for isFragment
+    
+    // 3. Positioning Logic (same as before)
     if (x !== undefined && y !== undefined) {
-        // Use explicit coordinates (used when spawning fragments)
         sprite.x = x;
         sprite.y = y;
     } else {
-        // Spawn randomly within the local radius around the center point (used for new asteroids)
         const angle = Math.random() * 2 * Math.PI;
         const radius = Math.random() * LOCAL_SPAWN_RADIUS;
-        
         sprite.x = centerX + Math.cos(angle) * radius;
         sprite.y = centerY + Math.sin(angle) * radius;
     }
     
     worldContainer.addChild(sprite);
 
-    // Update the returned resource object to store all properties
+    // 4. Return the new Asteroid object
     return {
         id: uniqueId,
         sprite: sprite,
         x: sprite.x,
         y: sprite.y,
-        isFragment: isFragment,
-        size: actualSize, // NEW: Store size for collision checks
+        isFragment: false, // CRITICAL: Explicitly and permanently set to false
+        size: actualSize, 
         health: health, 
-        maxHealth: maxHealth, // NEW: Max Health for alpha calculation
-        reward: reward, // NEW: Reward for collection
+        maxHealth: maxHealth, 
+        payload: resourcePayload, 
+        mass: mass,
+        restitution: ASTEROID_RESTITUTION,
+        vx: Math.cos(driftAngle) * driftSpeed, // Initial velocity X
+        vy: Math.sin(driftAngle) * driftSpeed, // Initial velocity Y
     };
 }
+
+function createFragment(x, y, payload) {
+    const uniqueId = Math.random() * 1000000; 
+    
+    // Fragments have fixed properties
+    const actualSize = RESOURCE_SIZE_FRAGMENT;
+    const health = 1; 
+    const maxHealth = 1; 
+    
+    // Create Graphic
+    const sprite = createResourceGraphic(true, actualSize); // 'true' for isFragment
+    sprite.x = x;
+    sprite.y = y;
+    
+    worldContainer.addChild(sprite);
+
+    // Return the new Fragment object
+    return {
+        id: uniqueId,
+        sprite: sprite,
+        x: sprite.x,
+        y: sprite.y,
+        isFragment: true, // CRITICAL: Explicitly and permanently set to true
+        size: actualSize, 
+        health: health, 
+        maxHealth: maxHealth, 
+        payload: payload, 
+        // Fragments need vx/vy to scatter (these will be set in splitResource)
+        mass: FRAGMENT_MASS,
+        restitution: FRAGMENT_RESTITUTION,
+        vx: 0, // Initial velocity is 0, set by splitResource (explosion)
+        vy: 0,
+    };
+}
+
+
 
 function initResources() {
     resources.forEach(r => {
@@ -499,8 +748,9 @@ function initResources() {
     
     // Spawn around the home base
     for (let i = 0; i < INITIAL_DOTS_SPAWN; i++) {
-        // Pass base coordinates as center X/Y
-        resources.push(createResource(undefined, undefined, false, homeBase.x, homeBase.y));
+        // FIX: The unnecessary 'false' argument was shifting the center coordinates
+        // The signature is: (x, y, centerX = 0, centerY = 0)
+        resources.push(createAsteroid(undefined, undefined, homeBase.x, homeBase.y));
     }
 }
 
@@ -523,6 +773,7 @@ function initPlayer() {
     player.x = initialX;
     player.y = initialY;
     currentBase = homeBase;
+    
 }
 
 // --- Base Selection & Movement Logic ---
@@ -548,6 +799,94 @@ function setupKeyboardControls() {
     window.addEventListener('keyup', (e) => {
         keyState[e.code] = false;
     });
+}
+
+function resolveCollision(a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const combinedRadius = a.size + b.size;
+
+    if (distance < combinedRadius) {
+        // 1. Separation Vector (Position Correction)
+        const overlap = combinedRadius - distance;
+        const normalX = dx / distance;
+        const normalY = dy / distance;
+
+        // Calculate inverse mass (1/mass)
+        const invMassA = 1 / a.mass;
+        const invMassB = 1 / b.mass;
+        const totalInvMass = invMassA + invMassB;
+        
+        // Push objects apart
+        a.x -= normalX * (overlap / totalInvMass) * invMassA;
+        a.y -= normalY * (overlap / totalInvMass) * invMassA;
+        b.x += normalX * (overlap / totalInvMass) * invMassB;
+        b.y += normalY * (overlap / totalInvMass) * invMassB;
+
+        // 2. Impulse Calculation (Velocity Change / Bounce)
+        const relativeVelocityX = b.vx - a.vx;
+        const relativeVelocityY = b.vy - a.vy;
+        
+        // Velocity along the collision normal
+        const speedAlongNormal = relativeVelocityX * normalX + relativeVelocityY * normalY;
+
+        // If objects are moving away, do nothing
+        if (speedAlongNormal > 0) return;
+        
+        // Choose the smaller restitution (bounciness)
+        const e = Math.min(a.restitution, b.restitution);
+        
+        // Calculate the impulse scalar
+        const j = -(1 + e) * speedAlongNormal / totalInvMass;
+
+        const impulseX = j * normalX;
+        const impulseY = j * normalY;
+
+        // Apply impulse (change in velocity)
+        a.vx -= impulseX * invMassA;
+        a.vy -= impulseY * invMassA;
+        b.vx += impulseX * invMassB;
+        b.vy += impulseY * invMassB;
+    }
+}
+
+function updatePhysics(deltaMS) {
+    const deltaSeconds = deltaMS / 1000;
+    
+    // 1. Resolve Collisions (Resource vs Resource)
+    for (let i = 0; i < resources.length; i++) {
+        for (let j = i + 1; j < resources.length; j++) {
+            resolveCollision(resources[i], resources[j]);
+        }
+    }
+    
+    // 2. Apply Movement and Friction/Drag
+    for (const entity of resources) {
+        
+        if (!entity || entity.x === undefined) continue;
+
+        // Euler integration: position += velocity * time
+        entity.x += entity.vx * deltaSeconds;
+        entity.y += entity.vy * deltaSeconds;
+        
+        // Apply Size-Dependent Friction/Drag
+        // Fragments (true) use the high coefficient, Asteroids (false) use the low one
+        const frictionCoefficient = entity.isFragment 
+            ? FRAGMENT_FRICTION_COEF 
+            : ASTEROID_FRICTION_COEF;
+            
+        // Calculate the factor by which velocity is reduced this frame
+        // Math.pow ensures smooth deceleration
+        const frictionFactor = Math.pow(1 - frictionCoefficient * deltaSeconds, 1);
+        
+        entity.vx *= frictionFactor; 
+        entity.vy *= frictionFactor; 
+        
+        // Update the PIXI sprite position
+        entity.sprite.x = entity.x;
+        entity.sprite.y = entity.y;
+    }
 }
 
 function moveActiveBase(deltaMS) {
@@ -582,24 +921,55 @@ function moveActiveBase(deltaMS) {
 
 // --- Base Laser (Bullet) & Resource Splitting Logic (MODIFIED) ---
 
-function splitResource(resource) {
-    const originalPos = { x: resource.x, y: resource.y };
+function splitResource(asteroid) {
+    worldContainer.removeChild(asteroid.sprite);
     
-    // 1. Remove original resource
-    if (resource.sprite.parent) {
-        worldContainer.removeChild(resource.sprite);
-    }
-    resources = resources.filter(r => r.id !== resource.id);
+    // 1. Dynamic Fragment Count based on health
+    const BASE_FRAGMENTS = 5; // Ensures a minimum of 5 fragments
+    
+    // Define how many fragments per unit of health (e.g., 5 fragments for every 50 MaxHealth)
+    const HEALTH_PER_FRAGMENT_UNIT = 50; 
+    const FRAGMENTS_PER_UNIT = 5;
 
-    // 2. Create fragments around the position
-    for (let i = 0; i < FRAGMENTS_PER_HIT; i++) {
-        // Spawn fragments in a small circle around the hit point
-        const angle = (i / FRAGMENTS_PER_HIT) * Math.PI * 2;
-        const radius = RESOURCE_SIZE_ASTEROID * 1.5;
-        const x = originalPos.x + Math.cos(angle) * radius * (Math.random() * 0.5 + 0.5); 
-        const y = originalPos.y + Math.sin(angle) * radius * (Math.random() * 0.5 + 0.5);
+    // Calculate dynamic fragments: Math.floor rounds down, so small asteroids get 0 extra fragments
+    const dynamicFragments = Math.floor(asteroid.maxHealth / HEALTH_PER_FRAGMENT_UNIT) * FRAGMENTS_PER_UNIT;
+    
+    // The total is the base minimum plus any fragments added by size
+    const totalFragments = BASE_FRAGMENTS + dynamicFragments; 
+    
+    console.log(`Splitting Asteroid (MaxHealth: ${asteroid.maxHealth}) into ${totalFragments} fragments.`);
+    
+    // 2. Calculate Fragment Payload
+    const fragmentPayload = {};
+    for (const typeName in asteroid.payload) {
+        if (asteroid.payload.hasOwnProperty(typeName)) {
+            // Distribute the original payload across all total fragments
+            fragmentPayload[typeName] = Math.ceil(asteroid.payload[typeName] / totalFragments);
+        }
+    }
+    
+    // 3. Spawn Fragments
+    // This loop is now guaranteed to run at least 5 times (totalFragments >= 5)
+    for (let i = 0; i < totalFragments; i++) {
+        const angle = Math.random() * 2 * Math.PI; 
+        const speed = MIN_EXPLOSION_SPEED + Math.random() * (MAX_EXPLOSION_SPEED - MIN_EXPLOSION_SPEED);
         
-        resources.push(createResource(x, y, true)); // true for isFragment
+        // --- CRITICAL FIX: Add a random offset to prevent stacking ---
+        const offsetRadius = asteroid.size * 0.5; // Use half the original asteroid size as max offset
+        const offsetX = asteroid.x + (Math.random() - 0.5) * offsetRadius;
+        const offsetY = asteroid.y + (Math.random() - 0.5) * offsetRadius;
+        
+        const newFragment = createFragment(
+            offsetX, // Use the scattered X position
+            offsetY, // Use the scattered Y position
+            fragmentPayload 
+        );
+        
+        // Apply Random Velocity (Scattering force)
+        newFragment.vx = Math.cos(angle) * speed;
+        newFragment.vy = Math.sin(angle) * speed;
+
+        resources.push(newFragment);
     }
 }
 
@@ -666,35 +1036,42 @@ function updateBullets(deltaMS) {
         // 3. Collision Check (Only check large resources/Asteroids)
         let hitResource = null;
             for (const resource of resources) {
+                
                 // Must be a large resource (Asteroid) and not a fragment
-                if (!resource.isFragment) {
-                    // ** CHANGE: Use the resource's stored size for collision radius **
-                    const resourceCollectionRadius = resource.size * 0.75; 
-                    const distToResource = distance(bullet, resource.sprite);
+                if (resource.isFragment === true) {
+                    continue; // Skip the rest of the loop for this resource and move to the next one
+                }    // ** CHANGE: Use the resource's stored size for collision radius **
+                
+                const resourceCollectionRadius = resource.size * 0.75; 
+                const distToResource = distance(bullet, resource.sprite);
                     
-                    if (distToResource < resourceCollectionRadius) {
-                        hitResource = resource;
-                        bullet.isAlive = false; // Destroy bullet on collision
-                        break;
+                if (distToResource < resourceCollectionRadius) {
+                    hitResource = resource;
+                    bullet.isAlive = false; // Destroy bullet on collision
+                    break;
                     }
-                }
             
             }
         
         // 4. Handle Hit/Cleanup
         if (hitResource) {
-            const laserDamage = getUpgrade('damage').currentValue; // This line remains the same
+            const laserDamage = getUpgrade('damage').currentValue; 
             
             // Apply damage
             hitResource.health -= laserDamage;
             
-            // Visual feedback: Adjust alpha based on remaining health
-            // ** CHANGE: Use maxHealth (the initial health) for the ratio **
+            // Visual feedback: Adjust alpha...
             hitResource.sprite.alpha = 0.5 + (hitResource.health / hitResource.maxHealth) * 0.5;
 
             // Check if destroyed
             if (hitResource.health <= 0) {
                 splitResource(hitResource);
+                
+                // CRITICAL FIX: Remove the destroyed asteroid from the global resources array
+                const resourceIndex = resources.indexOf(hitResource);
+                if (resourceIndex !== -1) {
+                    resources.splice(resourceIndex, 1);
+                }
             }
         }
 
@@ -822,7 +1199,7 @@ function moveToTarget(harvester, target, onArrival) {
     const speed = getUpgrade('speed').currentValue; // Speed is still a global upgrade
     
     const fullStepDistance = Math.min(dist, speed); 
-    const fullFuelCost = fullStepDistance * FUEL_CONSUMPTION_RATE;
+    const fullFuelCost = fullStepDistance * harvester.fuelConsumption;
 
     if (dist < speed) {
         harvester.x = target.x;
@@ -837,7 +1214,7 @@ function moveToTarget(harvester, target, onArrival) {
     let outOfFuel = false;
     
     if (harvester.currentFuel < fullFuelCost) { // Check fuel on the harvester object
-        actualMoveDistance = harvester.currentFuel / FUEL_CONSUMPTION_RATE;
+        actualMoveDistance = harvester.currentFuel / harvester.fuelConsumption;
         fuelCost = harvester.currentFuel;
         outOfFuel = true;
     }
@@ -919,30 +1296,31 @@ function gameLoop(delta) {
     const deltaTime = deltaMS / 1000; // Delta in seconds
     const now = performance.now();
     
-    // 0. Base Controls and Actions (Non-Harvester Specific)
-    moveActiveBase(deltaMS); // Moves the currently selected base (if applicable)
+    // 0. Base Controls and Actions (Non-Vehicle Specific)
+    moveActiveBase(deltaMS);
 
-    // Bullet Firing Logic (usually tied to a base/activeBase)
+    // Bullet Firing Logic
     const actualFireRate = getUpgrade('fire-rate').currentValue;
     if (activeBase && lastFireTime + actualFireRate < performance.now()) {
-        // Assuming this fires from the activeBase towards mouseWorldX/Y
         fireBullet(activeBase, mouseWorldX, mouseWorldY);
         lastFireTime = performance.now();
     }
     
     updateBullets(deltaMS);
     
+    // 2. Physics Update (remains)
+    updatePhysics(deltaMS); 
+
     // DYNAMIC RESOURCE SPAWNING LOGIC (Global)
     timeSinceLastSpawn += deltaMS; 
     const actualSpawnInterval = getUpgrade('spawn').currentValue;
 
     if (resources.length < DOT_COUNT && timeSinceLastSpawn >= actualSpawnInterval) {
-        // Local spawning logic using a random base
         if (bases.length > 0) {
             const targetBase = bases[Math.floor(Math.random() * bases.length)];
-            resources.push(createResource(undefined, undefined, false, targetBase.x, targetBase.y)); 
+            resources.push(createAsteroid(undefined, undefined, false, targetBase.x, targetBase.y)); 
         } else {
-            resources.push(createResource(undefined, undefined, false, homeBase.x, homeBase.y));
+            resources.push(createAsteroid(undefined, undefined, false, homeBase.x, homeBase.y));
         }
         timeSinceLastSpawn = 0; 
     }
@@ -952,183 +1330,209 @@ function gameLoop(delta) {
     if (isPanning) return; // Stop game logic if the map is being dragged
 
     // ===============================================
-    // START: HARVESTER LOOP (The Multi-Unit Engine)
+    // START: VEHICLE LOOP (Unified Engine)
     // ===============================================
     
-    harvesters.forEach(harvester => {
+    // --- LOG 1: Check Harvester Count ---
+    console.log(`[LOOP START] Game Loop running. Total Harvesters: ${harvesters.length}`); 
+
+    const allUnits = [...harvesters, ...vehicles]; 
+    let totalResearchGained = 0;
+    const canHarvestLargeResources = getUpgrade('large-haul').currentValue;
+
+    allUnits.forEach((unit, index) => {
         
-        // --- 1. REFUELING CHECK & LOGIC ---
-        const isNearBaseNow = isNearBase(harvester);
+        // --- SATELLITE LOGIC: GENERATE_RESEARCH ---s
+        if (unit.behavior === 'GENERATE_RESEARCH' && unit.currentBase) {
+            const base = unit.currentBase;
         
-        if (isNearBaseNow) {
-            harvester.isRefueling = true;
+       
+            unit.orbitalAngle += unit.orbitalSpeed; 
             
-            if (harvester.currentFuel < harvester.maxFuel) {
-                const fuelGained = REFUEL_RATE_PER_SEC * deltaTime;
-                harvester.currentFuel = Math.min(harvester.maxFuel, harvester.currentFuel + fuelGained);
-            }
-            
-            // Halt activity if refueling is necessary and in an idle state
-            if (harvester.currentFuel < harvester.maxFuel && (harvester.state === 'IDLE' || harvester.state === 'RETURNING_TO_BASE')) {
-                // Prevents unit from starting a new trip while low on fuel at base
-                // Assumes game flow handles skipping movement below.
+            // Ensure the angle wraps around
+            if (unit.orbitalAngle > Math.PI * 2) {
+                unit.orbitalAngle -= Math.PI * 2;
             }
 
-        } else {
-            harvester.isRefueling = false;
+            // 2. Calculate the new position on the circle
+            unit.x = base.x + Math.cos(unit.orbitalAngle) * unit.orbitalRadius;
+            unit.y = base.y + Math.sin(unit.orbitalAngle) * unit.orbitalRadius;
+
+            // 3. Update the sprite position
+            unit.sprite.x = unit.x;
+            unit.sprite.y = unit.y;
+            
+            // Optional: Update rotation to face the direction of orbit or the center
+            unit.sprite.rotation = unit.orbitalAngle + Math.PI / 2; // Facing direction of travel
         }
+        
+        // --- HARVESTER LOGIC: COLLECT_RESOURCES ---
+        else if (unit.state) { 
+            const harvester = unit; 
+            
+            // --- LOG 2: Check Harvester Status ---
+            console.log(`[HARVESTER ${index}] State: ${harvester.state} | Fuel: ${harvester.currentFuel.toFixed(0)}/${harvester.maxFuel} | Cargo: ${harvester.collectedInTrip}`); 
 
-        // --- 2. GAME STATE LOGIC ---
-        if (harvester.state === 'IDLE') {
+            // --- 1. PARTICLE EMITTER (Movement trail) ---
+            if (!harvester || harvester.x === undefined || harvester.y === undefined) {
+                 return; 
+            }
+            if (harvester.state !== 'IDLE' && now - harvester.lastParticleTime > PARTICLE_TRAIL_RATE) {
+                // ... (Particle logic here) ...
+            }
+
+            // --- 2. REFUELING CHECK & LOGIC ---
+            const isNearBaseNow = isNearBase(harvester);
+            if (isNearBaseNow) {
+                harvester.isRefueling = true;
+                if (harvester.currentFuel < harvester.maxFuel) {
+                    const fuelGained = REFUEL_RATE_PER_SEC * deltaTime;
+                    harvester.currentFuel = Math.min(harvester.maxFuel, harvester.currentFuel + fuelGained);
+                }
+            } else {
+                harvester.isRefueling = false;
+            }
             
-            // Check for low fuel & force return
-            const MIN_FUEL_FOR_TRIP = harvester.maxFuel * 0.05; 
-            if (harvester.currentFuel < MIN_FUEL_FOR_TRIP) {
-                 // Force return to nearest base/home base
-                 harvester.state = 'RETURNING_TO_BASE'; 
-                 return; // Skip finding a resource this tick
-            } 
-            
-            // Harvester is ready to work (Assuming a global GAME_IDLE_DELAY is still used for simplicity)
-           if (now - harvester.lastActionTime > GAME_IDLE_DELAY || harvester.lastActionTime === 0) { 
+            // --- 3. GAME STATE LOGIC (IDLE) ---
+            if (harvester.state === 'IDLE') {
                 
-                const nextAction = findNextTargetBase(harvester);
+                // --- LOG 3: IDLE State Check ---
+                const timeSinceLastAction = now - harvester.lastActionTime;
+                
+                // CRITICAL FIX: If IDLE but carrying cargo, force immediate return.
+                if (harvester.collectedInTrip > 0) {
+                    harvester.state = 'RETURNING_TO_BASE'; 
+                    return; // Transition immediately
+                }
+                
+                // Check for low fuel & force return
+                const MIN_FUEL_FOR_TRIP = harvester.maxFuel * 0.05; 
+                if (harvester.currentFuel < MIN_FUEL_FOR_TRIP) {
+                    harvester.state = 'RETURNING_TO_BASE'; 
+                    return; 
+                } 
 
-                if (nextAction) {
-                    harvester.currentBase = nextAction.nextBase; 
+                // Harvester is ready to work (Wait for delay to pass)
+               if (timeSinceLastAction > GAME_IDLE_DELAY || harvester.lastActionTime === 0) { 
+                    
+                    // --- LOG 4: IDLE Delay Passed ---
 
-                    if (nextAction.type === 'RESOURCE') {
+                    const nextAction = findNextTargetBase(harvester);
+                    if (nextAction) {
+                        harvester.currentBase = nextAction.nextBase; 
+                        harvester.state = nextAction.type === 'RESOURCE' ? 'MOVING_TO_RESOURCE' : 'MOVING_TO_BASE_LINK';
                         harvester.targetResource = nextAction.target;
-                        harvester.state = 'MOVING_TO_RESOURCE';
-                        console.log(`[${harvester.id}] IDLE -> MOVING_TO_RESOURCE. Target found.`);
-                    } else if (nextAction.type === 'BASE_LINK') {
-                        harvester.targetResource = {x: nextAction.target.x, y: nextAction.target.y}; 
-                        harvester.state = 'MOVING_TO_BASE_LINK';
-                        console.log(`[${harvester.id}] IDLE -> MOVING_TO_BASE_LINK. Target found.`);
+                        if (nextAction.type === 'BASE_LINK') harvester.targetResource = {x: nextAction.target.x, y: nextAction.target.y}; 
+                        
+                        // --- LOG 5: Successful IDLE Transition ---
+                    } else {
                     }
-                } else {
-                    // CRITICAL FIX: DO NOT reset lastActionTime here.
-                    // If no target is found, let it check again next frame instantly 
-                    // until a resource spawns or the player moves the base.
-                    console.log(`[${harvester.id}] IDLE. No targets found. Checking again next frame.`);
                 }
             }
-        }
 
-        // --- 3. Move/Collect ---
-        if (harvester.state === 'MOVING_TO_RESOURCE' && harvester.targetResource) {
-
-            // CRITICAL FIX: Validate target existence against the global resource list
-            const targetStillExists = resources.some(r => r.id === harvester.targetResource.id);
-            
-            if (!targetStillExists) {
-                // Target disappeared (collected by another unit or destroyed)
-                harvester.targetResource = null;
-                harvester.state = 'IDLE'; // Switch to IDLE to look for a new resource
-                return; // Skip further movement logic this tick
-            }
-            
-            // Move Harvester (Fuel consumption and out-of-fuel logic is inside moveToTarget)
-            moveToTarget(harvester, harvester.targetResource, (arrivedHarvester) => {
-                
-                const collectedInTripMax = getUpgrade('cargo-capacity').currentValue; 
-                
-                // CRITICAL FIX: Check collectedInTrip on the correct object and correct property.
-                if (arrivedHarvester.collectedInTrip >= collectedInTripMax) { 
-                    // Case 1: Cargo full
-                    arrivedHarvester.state = 'RETURNING_TO_BASE';
-                    arrivedHarvester.targetResource = null; 
-                    console.log(`[${arrivedHarvester.id}] Arrived & Full. State: RETURNING_TO_BASE.`);
-                    return;
+            // --- 4. Move/Collect (MOVING_TO_RESOURCE) & Link Movement ---
+            if (harvester.state === 'MOVING_TO_RESOURCE' && harvester.targetResource) {
+                const targetStillExists = resources.some(r => r.id === harvester.targetResource.id);
+                if (!targetStillExists) {
+                    harvester.targetResource = null;
+                    harvester.state = 'IDLE'; 
+                    return; 
                 }
                 
-                // Case 2: Arrived, cargo NOT full: look for a new local resource
-                const currentHarvesterRange = getUpgrade('harvester-range').currentValue; 
-                
-                // Note: findLocalResource uses the harvester's current location/base as the reference point
-                arrivedHarvester.targetResource = findLocalResource(arrivedHarvester, arrivedHarvester.currentBase, currentHarvesterRange); 
-                
-                if (arrivedHarvester.targetResource) {
-                    // New target found: The state remains MOVING_TO_RESOURCE, and moveToTarget will run with the NEW target next frame.
-                    console.log(`[${arrivedHarvester.id}] Arrived. Found new local target. Continuing move.`);
-                } else {
-                    // No new resource found nearby: return to base
-                    arrivedHarvester.state = 'RETURNING_TO_BASE'; 
-                    console.log(`[${arrivedHarvester.id}] Arrived. No new targets. State: RETURNING_TO_BASE.`);
-                }
-            });
-
-            // Continuous Collection (Must update the global resources array)
-            resources = resources.filter(resource => {
-                
-                // Distance check between harvester and resource
-                const collectionRadius = PLAYER_SIZE + (resource.isFragment ? RESOURCE_SIZE_FRAGMENT : resource.size); 
-                const dist = distance(harvester.sprite, resource.sprite); 
-                
-                const canCollect = resource.isFragment || canHarvestLargeResources;
-
-                if (canCollect && dist < collectionRadius) {
-                    worldContainer.removeChild(resource.sprite);
-                    harvester.collectedInTrip += resource.reward; 
+                moveToTarget(harvester, harvester.targetResource, (arrivedHarvester) => {
                     
-                    // If the collected resource was THIS harvester's target, clear it
-                    if (harvester.targetResource && harvester.targetResource.id === resource.id) {
-                         harvester.targetResource = null; // Clear target immediately
+                    if (arrivedHarvester.collectedInTrip >= harvester.cargoCapacity) { 
+                        arrivedHarvester.state = 'RETURNING_TO_BASE';
+                        arrivedHarvester.targetResource = null; 
+                        return;
                     }
-                    
-                    return false; // Remove the collected resource from the global array
+                    ; 
+                    arrivedHarvester.targetResource = findLocalResource(arrivedHarvester, arrivedHarvester.currentBase, arrivedHarvester.collectionRange); 
+                    if (!arrivedHarvester.targetResource) {
+                        arrivedHarvester.state = 'RETURNING_TO_BASE'; 
+                    }
+                });
+
+                // Continuous Collection (updates global resources array)
+                resources = resources.filter(resource => {
+                    const collectionRadius = PLAYER_SIZE + (resource.isFragment ? RESOURCE_SIZE_FRAGMENT : resource.size); 
+                    const dist = distance(harvester.sprite, resource.sprite); 
+                    const canCollect = resource.isFragment || canHarvestLargeResources;
+
+                    if (canCollect && dist < collectionRadius) {
+                        worldContainer.removeChild(resource.sprite);
+                        for (const typeName in resource.payload) {
+                            if (resource.payload.hasOwnProperty(typeName)) {
+                                harvester.collectedInTripPayload[typeName] = (harvester.collectedInTripPayload[typeName] || 0) + resource.payload[typeName];
+                                harvester.collectedInTrip += resource.payload[typeName]; 
+                            }
+                        }
+                        return false; 
+                    }
+                    return true; 
+                });
+
+                const collectedInTripMax = getUpgrade('capacity').currentValue;
+                if (!harvester.targetResource || harvester.collectedInTrip >= collectedInTripMax) {
+                    harvester.state = 'RETURNING_TO_BASE';
+                    harvester.targetResource = null;
                 }
-                return true; // Keep the resource
-            });
-
-
-            if (!harvester.targetResource) {
-                // If the target was cleared during the continuous collection filter above, 
-                // the harvester must immediately transition to look for the next action.
-                harvester.state = 'IDLE'; 
-                console.log(`[${harvester.id}] Target collected during filter. State: IDLE.`);
-                // We use IDLE here, not RETURNING_TO_BASE, because it will immediately run the IDLE check next frame.
-            } else if (harvester.collectedInTrip >= collectedInTripMax) {
-                harvester.state = 'RETURNING_TO_BASE';
-                harvester.targetResource = null;
-                console.log(`[${harvester.id}] Max cargo check triggered. State: RETURNING_TO_BASE.`);
             }
+
+            // 5. Move to Linked Base
+            if (harvester.state === 'MOVING_TO_BASE_LINK' && harvester.targetResource) {
+                 moveToTarget(harvester, harvester.targetResource, (arrivedHarvester) => {
+                    arrivedHarvester.targetResource = null;
+                    arrivedHarvester.state = 'IDLE'; 
+                    arrivedHarvester.lastActionTime = performance.now(); 
+                });
+            }
+            
+            // --- 6. Return to Base (RETURNING_TO_BASE) ---
+            if (harvester.state === 'RETURNING_TO_BASE') {
+                const depositTarget = harvester.currentBase || homeBase; 
+                
+                moveToTarget(harvester, depositTarget, (arrivedHarvester) => {
+                    for (const typeName in arrivedHarvester.collectedInTripPayload) {
+                        if (inventory.hasOwnProperty(typeName)) {
+                            inventory[typeName] += arrivedHarvester.collectedInTripPayload[typeName];
+                        }
+                    }
+                    arrivedHarvester.collectedInTrip = 0; 
+                    arrivedHarvester.collectedInTripPayload = {}; 
+                    arrivedHarvester.state = 'IDLE';
+                    arrivedHarvester.lastActionTime = performance.now(); 
+                    updateUpgradeButtons();
+                    updateHUD(); 
+                });
+            }
+            
+            // --- 7. RENDER ---
+            updateFuelBar(harvester);
         }
         
-        // 4. Move to Linked Base
-        if (harvester.state === 'MOVING_TO_BASE_LINK' && harvester.targetResource) {
-            moveToTarget(harvester, harvester.targetResource, (arrivedHarvester) => {
-                arrivedHarvester.targetResource = null;
-                arrivedHarvester.state = 'IDLE'; 
-                arrivedHarvester.lastActionTime = performance.now(); // <-- FIX: Reset individual timer
-            });
-        }
-
-        // 5. Return to Base 
-        if (harvester.state === 'RETURNING_TO_BASE') {
-            
-            // CRITICAL FIX: Define depositTarget before it's used
-            const depositTarget = harvester.currentBase || homeBase; 
-            
-            // Log target for debugging (Optional, but good practice)
-            console.log(`[${harvester.id}] Returning to: ${depositTarget.name || 'Home Base'}`);
-            
-            moveToTarget(harvester, depositTarget, (arrivedHarvester) => {
-                // Deposit score
-                score += arrivedHarvester.collectedInTrip;
-                
-                arrivedHarvester.collectedInTrip = 0; 
-                arrivedHarvester.state = 'IDLE';
-                arrivedHarvester.lastActionTime = performance.now(); 
-                updateUpgradeButtons();
-                console.log(`[${arrivedHarvester.id}] Deposit complete. State: IDLE.`);
-            });
-        }
-        
-        // --- 6. RENDER ---
-        updateFuelBar(harvester);
     });
-    
+
+    // Apply accumulated research
+    if (totalResearchGained > 0) {
+        inventory.research = (inventory.research || 0) + totalResearchGained;
+        updateHUD(); 
+    }
+
+    // 3. Update Particles (Cleanup Logic)
+    particles = particles.filter(p => {
+        const age = now - p.startTime;
+        const lifeRatio = 1 - (age / p.maxLife);
+        
+        p.sprite.alpha = lifeRatio * 0.8;
+        p.sprite.scale.set(lifeRatio); 
+        
+        if (age > p.maxLife) {
+            worldContainer.removeChild(p.sprite);
+            return false; 
+        }
+        return true;
+    });
 }
 
 // --- Upgrade Functions ---
@@ -1182,17 +1586,35 @@ function toggleUpgradePanel() {
 
 }
 
+function updateHUD() {
+    // 1. Update the original Crystals display (which is now dynamic, but we keep the old ID for compatibility)
+    const crystalDisplay = document.getElementById('score-display');
+    if (crystalDisplay) {
+        crystalDisplay.textContent = inventory[RESOURCE_TYPES.CRYSTAL.name];
+    }
 
+    // 2. Loop through all resource types to update the dynamic row
+    for (const key in RESOURCE_TYPES) {
+        const resourceType = RESOURCE_TYPES[key];
+        // Now consistently using the new ID structure
+        const displayId = `inventory-display-${key.toLowerCase()}`;
+        const displayElement = document.getElementById(displayId);
+        
+        if (displayElement) {
+            displayElement.textContent = inventory[resourceType.name];
+        }
+    }
+}
 
 function updateUpgradeButtons() {
-    if (scoreDisplay) scoreDisplay.textContent = score.toLocaleString();
+    if (scoreDisplay) scoreDisplay.textContent = inventory[RESOURCE_TYPES.CRYSTAL.name].toLocaleString();
 
     UPGRADES.forEach(upgrade => {
         const button = document.getElementById(`upgrade-${upgrade.id}`);
         const costDisplay = document.getElementById(`${upgrade.id}-cost`);
         const levelDisplay = document.getElementById(`${upgrade.id}-level`);
         const buttons = upgradePanelContent.querySelectorAll('.upgrade-button');
-        const isDisabled = upgrade.cost === Infinity || score < upgrade.cost;
+        const isDisabled = upgrade.cost === Infinity || inventory[RESOURCE_TYPES.CRYSTAL.name] < upgrade.cost;
         
         buttons.forEach(button => {
             const key = button.getAttribute('data-key');
@@ -1223,7 +1645,7 @@ function updateUpgradeButtons() {
 
     // Handle special purchase (New Base)
     if (newBaseButton) {
-        newBaseButton.disabled = score < baseCost;
+        newBaseButton.disabled = inventory[RESOURCE_TYPES.CRYSTAL.name] < baseCost;
     }
     if (newBaseCostDisplay) {
         newBaseCostDisplay.textContent = baseCost.toLocaleString();
@@ -1263,54 +1685,81 @@ function handleUpgradePurchase(event) {
     renderUpgradePanel(); 
 }
 
+function applyUnitUpgrade(statId, newValue, unitTypeId = null) {
+    vehicles.forEach(unit => {
+        // 1. Check if the unit matches the target type (if specified)
+        const matchesType = unitTypeId ? unit.typeId === unitTypeId : true; 
+        
+        // 2. Check if the property exists on the unit (prevents accidental creation of properties)
+        if (matchesType && unit.hasOwnProperty(statId)) {
+            unit[statId] = newValue;
+            // console.log(`[UPGRADE] Applied ${statId}: ${newValue} to ${unit.id}`);
+        }
+    });
+}
 function purchaseUpgrade(upgradeId) {
     const upgrade = getUpgradeById(upgradeId);
+    const resourceKey = RESOURCE_TYPES.CRYSTAL.name;
 
-    if (!upgrade) {
-        // This log confirms the [object Object] error is now fixed,
-        // as it will only log if the ID is truly missing (which it shouldn't be now)
-        console.error(`Upgrade with ID ${upgradeId} not found.`); 
-        return;
+    if (!upgrade || inventory[resourceKey] < upgrade.cost) {
+        return; 
     }
 
+    // 1. Basic cost deduction and level up
+    inventory[resourceKey] -= upgrade.cost;
+    upgrade.level++;
     
+    // 2. CALCULATE VALUE
+    const newValue = upgrade.effect(upgrade.level);
+    upgrade.currentValue = newValue; 
+    
+    // 3. HANDLE VEHICLE SPAWNING (NEW LOGIC)
+    if (upgrade.spawnsVehicleType) {
+        const vehicleType = upgrade.spawnsVehicleType;
         
-    if (score >= upgrade.cost) {
-        score -= upgrade.cost;
-        upgrade.level++;
+        // Use VehicleFactory to create the new unit at the home base
+        const newUnit = VehicleFactory(
+            vehicleType, 
+            homeBase.x, 
+            homeBase.y,
+            homeBase // Pass the base object if the unit needs a reference
+        );
         
-        upgrade.currentValue = upgrade.effect(upgrade.level);
-        
-        // SPECIAL CASE: Update game state variables
-        if (upgradeId === 'capacity') {
-            collectedInTripMax = upgrade.currentValue;
-        } else if (upgradeId === 'harvester-range') {
-            currentHarvesterRange = upgrade.currentValue;
-        } else if (upgradeId === 'large-haul') { 
-            canHarvestLargeResources = upgrade.currentValue;
-            upgrade.cost = Infinity; 
+        // 🎯 CRITICAL: Add the unit to its specific array and the global 'units' array
+        if (newUnit) {
+            vehicles.push(newUnit); // Add to general unit array
+            
+            
         }
-
-        if (upgradeId === 'new-harvester') {
-            spawnNewHarvester()
-            upgrade.currentValue = harvesters.length;
-        } else {
-            upgrade.currentValue = calculateUpgradeValue(upgrade); 
-        }
-
-        // 2. Recalculate the next cost
-        if (upgrade.costFormula) {
-             upgrade.cost = upgrade.costFormula(upgrade.cost);
-        }
-        
-        updateUpgradeButtons();
-        drawBaseConnections(); 
+    } 
+    
+    // 4. APPLY UNIT STAT UPGRADES
+    else if (upgrade.appliesToStat && upgrade.appliesToType) {
+        // This handles Speed, Capacity, Range, etc.
+        applyUnitUpgrade(upgrade.appliesToStat, newValue, upgrade.appliesToType);
     }
+
+    // 5. HANDLE NON-SPAWNING / GLOBAL SPECIAL ACTIONS
+    switch (upgradeId) {
+        case 'large-haul':
+            canHarvestLargeResources = newValue;
+            upgrade.cost = Infinity; 
+            break;
+    }
+
+    // 6. Recalculate the next cost
+    if (upgrade.costFormula) {
+        upgrade.cost = upgrade.costFormula(upgrade.cost);
+    }
+    
+    // 7. Update UI
+    updateUpgradeButtons();
+    drawBaseConnections();
 }
 
 function purchaseNewBase() {
-    if (score >= baseCost) {
-        score -= baseCost;
+    if (inventory[RESOURCE_TYPES.CRYSTAL.name] >= baseCost) {
+        inventory[RESOURCE_TYPES.CRYSTAL.name] -= baseCost;
         baseCount++;
         const newBase = createBaseGraphic(0xFFE470, homeBase.x + 400, homeBase.y + 400); 
         newBase.name = `Base ${baseCount}`;
@@ -1322,6 +1771,33 @@ function purchaseNewBase() {
         onBaseSelect({ target: newBase });
     }
 }
+
+function purchaseVehicle(typeId) {
+    const template = VEHICLE_DEFINITIONS.find(d => d.id === typeId);
+    if (!template || !activeBase) return;
+    
+    const cost = template.purchaseCost;
+    
+    // Check if the base has a satellite already (if it's a unique-per-base item)
+    if (typeId === 'satellite' && vehicles.some(v => v.typeId === 'satellite' && v.currentBase === activeBase)) {
+        console.warn("Base already has a Research Satellite.");
+        return;
+    }
+    
+    if (score >= cost) {
+        score -= cost;
+        
+        // Offset the satellite slightly from the base center for a better visual
+        const xOffset = activeBase.width / 2;
+        const newVehicle = VehicleFactory(typeId, activeBase.x + xOffset, activeBase.y, activeBase);
+        
+        vehicles.push(newVehicle);
+        
+        updateUpgradeButtons();
+    }
+}
+
+
 
 let nextBaseCount = 1;
 
@@ -1371,7 +1847,7 @@ function createUpgradeCardHTML(id, upgrade) {
     
     // --- NEW LOGIC TO CHECK AFFORDABILITY ---
     // Assumes 'score' is a globally accessible variable holding player resources.
-    const canAfford = (score >= upgrade.cost); 
+    const canAfford = (inventory[RESOURCE_TYPES.CRYSTAL.name] >= upgrade.cost); 
     
     // Apply the 'disabled' attribute and CSS class conditionally
     const disabledAttr = canAfford ? '' : 'disabled';
@@ -1737,15 +2213,13 @@ function initializePixi() {
         worldContainer.addChild(roadGraphics); 
 
         // 2. Spawn the initial harvester at the Home Base
-        const initialHarvester = HarvesterFactory(homeBase.x, homeBase.y);
-        harvesters.push(initialHarvester);
+        const initialHarvester = VehicleFactory('harvester', 0, 0, homeBase);
+        vehicles.push(initialHarvester); // Use the new 'vehicles' array
+        activeHarvester = initialHarvester;
 
         worldContainer.addChild(initialHarvester.sprite);
         worldContainer.addChild(initialHarvester.fuelBar);
-        
-        activeHarvester = initialHarvester;
-
-        
+               
 
         app.ticker.add(gameLoop);
 
@@ -1775,6 +2249,38 @@ function handleResize() {
         snapToHomeBase(); 
         state = 'IDLE';
         lastActionTime = performance.now();
+    }
+}
+
+function initializeDynamicInventory() {
+    const inventoryRow = document.getElementById('inline-inventory-display');
+    if (!inventoryRow) return;
+
+    // Loop through all defined resource types
+    for (const key in RESOURCE_TYPES) {
+        const resourceType = RESOURCE_TYPES[key];
+        
+        const resourceDiv = document.createElement('div');
+        resourceDiv.className = 'text-sm';
+        
+        resourceDiv.innerHTML = `${resourceType.name}: `;
+        
+        const valueSpan = document.createElement('span');
+        
+        // CRITICAL CHANGE: Use a consistent, dynamic ID for ALL resources
+        valueSpan.id = `inventory-display-${key.toLowerCase()}`; 
+        
+        valueSpan.className = 'stat text-xl font-bold'; 
+        
+        // Set color dynamically based on the resource type color
+        valueSpan.style.color = `#${resourceType.color.toString(16).padStart(6, '0')}`;
+        
+        valueSpan.textContent = '0'; 
+
+        resourceDiv.appendChild(valueSpan);
+        
+        // CRITICAL CHANGE: Prepend the Crystal display to keep it first, or append to keep the defined order
+        inventoryRow.appendChild(resourceDiv);
     }
 }
 
@@ -1847,6 +2353,8 @@ window.onload = function() {
     } else {
         console.error("Game container #pixi-canvas-container not found!");
     }
+
+    initializeDynamicInventory();
 
     
     
