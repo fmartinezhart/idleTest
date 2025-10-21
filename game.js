@@ -21,6 +21,10 @@ const BASE_LASER_DAMAGE = 20; // NEW: Base damage dealt by one bullet
 const MOVEMENT_SPEED_BASE = 2.5; // Pixi units per frame
 const GAME_IDLE_DELAY = 1000; // 1 second delay at base
 
+const MINER_BULLET_SPEED = 400; 
+const MINER_BASE_DAMAGE = 15;
+const MINER_ATTACK_RANGE = 200; 
+
 // ** DYNAMIC WIDTH/HEIGHT: These are now variables initialized at runtime **
 let currentWidth = window.innerWidth;
 let currentHeight = window.innerHeight;
@@ -141,6 +145,24 @@ const VEHICLE_DEFINITIONS = [
         // New property for behavior
         behavior: 'GENERATE_RESEARCH', 
         graphicSize: 0.7, // Smaller graphic
+    },
+    {
+        id: 'miner',
+        name: 'Miner Unit',
+        maxFuel: 100,
+        fuelConsumption: 0.05, 
+        cargoCapacity: 100,
+        collectionRange: 1000,
+        researchRate: 0,
+        purchaseCost: 50, // Added a sample cost
+        subgroup: 'Mining Ships',
+        behavior: 'MINE_RESOURCES',
+        graphicSize: 1.5, 
+        
+        // NEW COMBAT PROPERTIES
+        fireRateMS: 500, // Once every 500ms
+        damage: MINER_BASE_DAMAGE,
+        isCombat: true,
     },
     // Add new ship types here later!
 ];
@@ -308,6 +330,23 @@ const UPGRADES = [
         currentValue: countVehiclesByType('satellite'), 
         maxLevel: 5
     },
+    {
+        id: 'new-miner',
+        name: 'New Miner',
+        // The level *is* the number of satellites currently owned
+        level: countVehiclesByType('miner'), 
+        baseCost: 1,
+        cost: 1,
+        group: 'ship types',
+        subgroup: 'Ships',
+        spawnsVehicleType: 'miner',
+        description: 'Deploys an additional autonomous mining unit.',
+        effect: (level) => `Total Mining ships: ${level}`, 
+        costFormula: (cost) => Math.floor(cost * 2.5),
+        // FIXED: Use the helper function (assuming typeId is 'satellite')
+        currentValue: countVehiclesByType('miner'), 
+        maxLevel: 5
+    },
     
 ];
 
@@ -323,6 +362,7 @@ const RESOURCE_TYPES = {
     CRYSTAL: { name: 'Crystals', color: 0x8C7AE6, collectSound: 'collectCrystal' },
     METAL: { name: 'Metal', color: 0xA9A9A9, collectSound: 'collectMetal' },
     ICE: { name: 'Ice', color: 0x69D2E7, collectSound: 'collectIce' },
+    RESEARCH: { name: 'Research', color: 0x99D2E7, collectSound: '' },
     // You can add more later: DUST, GAS, etc.
 };
 
@@ -330,6 +370,7 @@ let inventory = {
     [RESOURCE_TYPES.CRYSTAL.name]: 0,
     [RESOURCE_TYPES.METAL.name]: 0,
     [RESOURCE_TYPES.ICE.name]: 0,
+    Research:0,
 
 };
 
@@ -937,7 +978,6 @@ function splitResource(asteroid) {
     // The total is the base minimum plus any fragments added by size
     const totalFragments = BASE_FRAGMENTS + dynamicFragments; 
     
-    console.log(`Splitting Asteroid (MaxHealth: ${asteroid.maxHealth}) into ${totalFragments} fragments.`);
     
     // 2. Calculate Fragment Payload
     const fragmentPayload = {};
@@ -1189,6 +1229,51 @@ function findLocalResource(harvester, base, range) {
     return nearest;
 }
 
+function minerFireLaser(miner, target) {
+    const now = performance.now();
+    
+    if (now - miner.lastFireTime < miner.fireRateMS) {
+        return; // Cooldown not yet finished
+    }
+
+    // Calculate direction towards the target asteroid
+    const deltaX = target.x - miner.x;
+    const deltaY = target.y - miner.y;
+    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    
+    if (distance === 0) return; // Should not happen
+
+    const dirX = deltaX / distance;
+    const dirY = deltaY / distance;
+
+    // Create the bullet object (similar to Home Base bullet)
+    const bullet = {
+        x: miner.x,
+        y: miner.y,
+        dirX: dirX,
+        dirY: dirY,
+        damage: miner.damage, // Use Miner's damage
+        speed: MINER_BULLET_SPEED,
+        maxRange: MINER_ATTACK_RANGE * 1.5, // Bullet flies slightly past the attack range
+        initialX: miner.x,
+        initialY: miner.y,
+        isAlive: true,
+    };
+    
+    // Create the visual sprite (a small red dot for a hostile shot)
+    const graphics = new PIXI.Graphics();
+    graphics.beginFill(0xFF4444); // Red/Hostile color
+    graphics.drawCircle(0, 0, 1.5);
+    graphics.endFill();
+
+    bullet.sprite = new PIXI.Sprite(graphics.generateTexture()); // Use PIXI.Texture.from(graphics) if generateTexture is still an issue
+    bullet.sprite.anchor.set(0.5);
+    worldContainer.addChild(bullet.sprite);
+
+    bullets.push(bullet);
+    miner.lastFireTime = now;
+}
+
 function moveToTarget(harvester, target, onArrival) {
     if (!target || isPanning) return; // isPanning check is fine
 
@@ -1334,7 +1419,6 @@ function gameLoop(delta) {
     // ===============================================
     
     // --- LOG 1: Check Harvester Count ---
-    console.log(`[LOOP START] Game Loop running. Total Harvesters: ${harvesters.length}`); 
 
     const allUnits = [...harvesters, ...vehicles]; 
     let totalResearchGained = 0;
@@ -1364,6 +1448,8 @@ function gameLoop(delta) {
             
             // Optional: Update rotation to face the direction of orbit or the center
             unit.sprite.rotation = unit.orbitalAngle + Math.PI / 2; // Facing direction of travel
+            totalResearchGained += 1
+            
         }
         
         // --- HARVESTER LOGIC: COLLECT_RESOURCES ---
@@ -1398,12 +1484,9 @@ function gameLoop(delta) {
                 
                 // --- LOG 3: IDLE State Check ---
                 const timeSinceLastAction = now - harvester.lastActionTime;
-                
+                console.log(harvester.targetResource)
                 // CRITICAL FIX: If IDLE but carrying cargo, force immediate return.
-                if (harvester.collectedInTrip > 0) {
-                    harvester.state = 'RETURNING_TO_BASE'; 
-                    return; // Transition immediately
-                }
+                
                 
                 // Check for low fuel & force return
                 const MIN_FUEL_FOR_TRIP = harvester.maxFuel * 0.05; 
@@ -1413,7 +1496,7 @@ function gameLoop(delta) {
                 } 
 
                 // Harvester is ready to work (Wait for delay to pass)
-               if (timeSinceLastAction > GAME_IDLE_DELAY || harvester.lastActionTime === 0) { 
+               if (timeSinceLastAction > GAME_IDLE_DELAY) { 
                     
                     // --- LOG 4: IDLE Delay Passed ---
 
@@ -1423,9 +1506,57 @@ function gameLoop(delta) {
                         harvester.state = nextAction.type === 'RESOURCE' ? 'MOVING_TO_RESOURCE' : 'MOVING_TO_BASE_LINK';
                         harvester.targetResource = nextAction.target;
                         if (nextAction.type === 'BASE_LINK') harvester.targetResource = {x: nextAction.target.x, y: nextAction.target.y}; 
-                        
+
                         // --- LOG 5: Successful IDLE Transition ---
                     } else {
+                        harvester.state = 'RETURNING_TO_BASE' 
+
+                    }
+                }
+            
+            }
+
+           if (harvester.behavior === 'MINE_RESOURCES') {
+            
+                // --- IDLE/FIND TARGET ---
+                // CRITICAL FIX: Only look for a target if the state is strictly 'IDLE' 
+                // AND fuel is not low. Low fuel forces 'RETURNING_TO_BASE'.
+                if (harvester.state === 'IDLE') { // Removed || harvester.state === 'RETURNING_TO_BASE'
+                    // Find the nearest asteroid (non-fragment resource)
+                    const target = resources.find(r => !r.isFragment && distance(harvester, r) < harvester.collectionRange);
+                    
+                    if (target) {
+                        harvester.targetResource = target;
+                        harvester.state = 'MOVING_TO_TARGET';
+                    }
+                }
+                
+                // --- ATTACKING/MOVING ---
+                if (harvester.state === 'MOVING_TO_TARGET' || harvester.state === 'ATTACKING_TARGET') {
+                    const target = harvester.targetResource;
+
+                    // Check if target is destroyed or invalid
+                    if (!target || target.health <= 0) {
+                        harvester.state = 'IDLE'; // Reset to find new target
+                        harvester.targetResource = null;
+                        return;
+                    }
+                    
+                    const distToTarget = distance(harvester, target);
+                    
+                    if (distToTarget < MINER_ATTACK_RANGE) {
+                        // ** ATTACK RANGE **
+                        harvester.state = 'ATTACKING_TARGET';
+                        
+                        // Call the new combat function
+                        fireBullet(harvester, target.x, target.y); 
+                        
+                    } else {
+                        // ** MOVING **
+                        harvester.state = 'MOVING_TO_TARGET';
+                        
+                        // Steer toward the target (re-using existing steering logic)
+                        moveToTarget(harvester, target)
                     }
                 }
             }
@@ -1472,7 +1603,7 @@ function gameLoop(delta) {
                     return true; 
                 });
 
-                const collectedInTripMax = getUpgrade('capacity').currentValue;
+                const collectedInTripMax = getUpgrade('capacity').currentValue; 
                 if (!harvester.targetResource || harvester.collectedInTrip >= collectedInTripMax) {
                     harvester.state = 'RETURNING_TO_BASE';
                     harvester.targetResource = null;
@@ -1515,7 +1646,7 @@ function gameLoop(delta) {
 
     // Apply accumulated research
     if (totalResearchGained > 0) {
-        inventory.research = (inventory.research || 0) + totalResearchGained;
+        inventory.Research = (inventory.Research || 0) + totalResearchGained;
         updateHUD(); 
     }
 
